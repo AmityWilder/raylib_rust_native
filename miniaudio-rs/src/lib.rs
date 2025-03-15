@@ -3711,7 +3711,7 @@ See below for some tips on improving performance.
   is due to 64-bit file APIs not being available.
 */
 
-use std::{alloc::Layout, cell::UnsafeCell, ptr::NonNull, sync::{atomic::AtomicI32, Mutex}};
+use std::{alloc::Layout, num::NonZeroUsize, ptr::NonNull, sync::Mutex};
 
 #[cfg(feature = "support_sse2")]
 #[cfg(target_arch = "x86_64")]
@@ -3732,6 +3732,16 @@ pub const VERSION_STRING:   &str  = "0.11.21";
 
 /** SIMD alignment in bytes. Currently set to 32 bytes in preparation for future AVX optimizations. */
 pub const MA_SIMD_ALIGNMENT: usize = 32;
+
+#[inline(always)]
+const fn align(x: usize, a: NonZeroUsize) -> usize {
+    (x + (a - 1)) & !(a - 1)
+}
+
+#[inline(always)]
+const fn align_64(x: usize) -> usize {
+    align(x, unsafe { NonZeroUsize::new_unchecked(8) })
+}
 
 /**
 Logging Levels
@@ -3771,6 +3781,7 @@ pub struct Device;
 pub type Channel = u8;
 
 /** Do not use `_ChannelPosition` directly. Use `Channel` instead. */
+#[repr(u8)]
 pub enum _ChannelPosition {
     None             = 0,
     Mono             = 1,
@@ -3824,7 +3835,7 @@ pub enum _ChannelPosition {
     Aux29            = 49,
     Aux30            = 50,
     Aux31            = 51,
-    PositionCount    = (Self::Aux31 as isize + 1)
+    PositionCount    = (Self::Aux31 as u8 + 1)
 }
 
 #[allow(non_upper_case_globals)]
@@ -4272,6 +4283,280 @@ impl<'a, const MAX_LOG_CALLBACKS: usize> Log<'a, MAX_LOG_CALLBACKS> {
     }
 }
 
+/**************************************************************************************************************************************************************
+
+Biquad Filtering
+
+**************************************************************************************************************************************************************/
+pub const BIQUAD_FIXED_POINT_SHIFT: usize = 14;
+
+pub union BiquadCoefficient {
+    f32: f32,
+    s32: i32,
+}
+
+pub struct BiquadConfig {
+    format: Format,
+    channels: u32,
+    b0: f64,
+    b1: f64,
+    b2: f64,
+    a0: f64,
+    a1: f64,
+    a2: f64,
+}
+
+impl BiquadConfig {
+    pub fn ma_biquad_config_init(format: Format, channels: u32, b0: f64, b1: f64, b2: f64, a0: f64, a1: f64, a2: f64) -> Self {
+        Self {
+            format,
+            channels,
+            b0,
+            b1,
+            b2,
+            a0,
+            a1,
+            a2,
+        }
+    }
+}
+
+impl BiquadConfig {
+    fn get_heap_layout(&self) -> Result<BiquadHeapLayout> {
+        if (self.channels == 0) {
+            return Err(Error::InvalidArgs);
+        }
+
+        let mut size_in_bytes = 0;
+
+        /* R0 */
+        let mut r1_offset = size_in_bytes;
+        size_in_bytes += std::mem::size_of::<BiquadCoefficient>() * self.channels;
+
+        /* R1 */
+        let mut r2_offset = size_in_bytes;
+        size_in_bytes += std::mem::size_of::<BiquadCoefficient>() * self.channels;
+
+        /* Make sure allocation size is aligned. */
+        size_in_bytes = ma_align_64(size_in_bytes);
+
+        Ok(BiquadHeapLayout {
+            size_in_bytes,
+            r1_offset,
+            r2_offset,
+        })
+    }
+}
+
+pub struct BiquadHeapLayout {
+    size_in_bytes: usize,
+    r1_offset: usize,
+    r2_offset: usize,
+}
+
+pub struct Biquad<'a> {
+    pub format: Format,
+    pub channels: u32,
+    pub b0: BiquadCoefficient,
+    pub b1: BiquadCoefficient,
+    pub b2: BiquadCoefficient,
+    pub a1: BiquadCoefficient,
+    pub a2: BiquadCoefficient,
+    pub p_r1: &'a mut BiquadCoefficient,
+    pub p_r2: &'a mut BiquadCoefficient,
+
+    /* Memory management. */
+    heap: &'a mut [u8],
+    owns_heap: bool,
+}
+
+impl<'a> Biquad<'a> {
+    fn float_to_fp(x: f64) -> i32 {
+        (x * (1 << BIQUAD_FIXED_POINT_SHIFT) as f64) as i32
+    }
+
+    pub fn get_heap_size(config: &BiquadConfig) -> Result<usize> {
+        ma_result result;
+        ma_biquad_heap_layout heapLayout;
+
+        if (pHeapSizeInBytes == NULL) {
+            return MA_INVALID_ARGS;
+        }
+
+        *pHeapSizeInBytes = 0;
+
+        ma_biquad_get_heap_layout(pConfig, &heapLayout)?;
+
+        *pHeapSizeInBytes = heapLayout.sizeInBytes;
+
+        Ok()
+    }
+
+    pub fn init_preallocated(config: &BiquadConfig, heap: *mut u8) -> Result<Biquad> {
+        ma_result result;
+        ma_biquad_heap_layout heapLayout;
+
+        if (pBQ == NULL) {
+            return MA_INVALID_ARGS;
+        }
+
+        MA_ZERO_OBJECT(pBQ);
+
+        result = ma_biquad_get_heap_layout(pConfig, &heapLayout);
+        if (result != MA_SUCCESS) {
+            return result;
+        }
+
+        pBQ->_pHeap = pHeap;
+        MA_ZERO_MEMORY(pHeap, heapLayout.sizeInBytes);
+
+        pBQ->pR1 = (ma_biquad_coefficient*)ma_offset_ptr(pHeap, heapLayout.r1Offset);
+        pBQ->pR2 = (ma_biquad_coefficient*)ma_offset_ptr(pHeap, heapLayout.r2Offset);
+
+        return ma_biquad_reinit(pConfig, pBQ);
+    }
+
+    pub fn init<A: Allocator>(config: &BiquadConfig, allocator: &mut A) -> Result<Biquad> {
+
+        ma_result result;
+        size_t heapSizeInBytes;
+        void* pHeap;
+
+        result = ma_biquad_get_heap_size(pConfig, &heapSizeInBytes);
+        if (result != MA_SUCCESS) {
+            return result;
+        }
+
+        if (heapSizeInBytes > 0) {
+            pHeap = ma_malloc(heapSizeInBytes, pAllocationCallbacks);
+            if (pHeap == NULL) {
+                return MA_OUT_OF_MEMORY;
+            }
+        } else {
+            pHeap = NULL;
+        }
+
+        result = ma_biquad_init_preallocated(pConfig, pHeap, pBQ);
+        if (result != MA_SUCCESS) {
+            ma_free(pHeap, pAllocationCallbacks);
+            return result;
+        }
+
+        pBQ->_ownsHeap = MA_TRUE;
+        return MA_SUCCESS;
+    }
+
+    pub fn uninit<A: Allocator>(self, allocator: &mut A) {
+
+        if (pBQ == NULL) {
+            return;
+        }
+
+        if (pBQ->_ownsHeap) {
+            ma_free(pBQ->_pHeap, pAllocationCallbacks);
+        }
+    }
+
+    pub fn reinit(&mut self, config: &BiquadConfig) -> Result<()> {
+
+        if (pBQ == NULL || pConfig == NULL) {
+            return MA_INVALID_ARGS;
+        }
+
+        if (pConfig->a0 == 0) {
+            return MA_INVALID_ARGS; /* Division by zero. */
+        }
+
+        /* Only supporting f32 and s16. */
+        if (pConfig->format != ma_format_f32 && pConfig->format != ma_format_s16) {
+            return MA_INVALID_ARGS;
+        }
+
+        /* The format cannot be changed after initialization. */
+        if (pBQ->format != ma_format_unknown && pBQ->format != pConfig->format) {
+            return MA_INVALID_OPERATION;
+        }
+
+        /* The channel count cannot be changed after initialization. */
+        if (pBQ->channels != 0 && pBQ->channels != pConfig->channels) {
+            return MA_INVALID_OPERATION;
+        }
+
+
+        pBQ->format   = pConfig->format;
+        pBQ->channels = pConfig->channels;
+
+        /* Normalize. */
+        if (pConfig->format == ma_format_f32) {
+            pBQ->b0.f32 = (float)(pConfig->b0 / pConfig->a0);
+            pBQ->b1.f32 = (float)(pConfig->b1 / pConfig->a0);
+            pBQ->b2.f32 = (float)(pConfig->b2 / pConfig->a0);
+            pBQ->a1.f32 = (float)(pConfig->a1 / pConfig->a0);
+            pBQ->a2.f32 = (float)(pConfig->a2 / pConfig->a0);
+        } else {
+            pBQ->b0.s32 = ma_biquad_float_to_fp(pConfig->b0 / pConfig->a0);
+            pBQ->b1.s32 = ma_biquad_float_to_fp(pConfig->b1 / pConfig->a0);
+            pBQ->b2.s32 = ma_biquad_float_to_fp(pConfig->b2 / pConfig->a0);
+            pBQ->a1.s32 = ma_biquad_float_to_fp(pConfig->a1 / pConfig->a0);
+            pBQ->a2.s32 = ma_biquad_float_to_fp(pConfig->a2 / pConfig->a0);
+        }
+
+        return MA_SUCCESS;
+    }
+
+    pub fn clear_cache(&mut self) -> Result<()> {
+        if (self.format == ma_format_f32) {
+            self.p_r1.f32 = 0;
+            self.p_r2.f32 = 0;
+        } else {
+            self.p_r1.s32 = 0;
+            self.p_r2.s32 = 0;
+        }
+
+        Ok(())
+    }
+
+    pub fn process_pcm_frames(&mut self, frames_out: &mut [u8], frames_in: &[u8], frame_count: u64) -> Result<()> {
+        /* Note that the logic below needs to support in-place filtering. That is, it must support the case where pFramesOut and pFramesIn are the same. */
+
+        match self.format {
+            Format::F32 => {
+                let mut pY = unsafe { std::mem::transmute::<&mut [u8], &mut [f32]>(frames_out) };
+                let mut pX = unsafe { std::mem::transmute::<&    [u8], &    [f32]>(frames_in ) };
+
+                for n in 0..frame_count {
+                    self.process_pcm_frame_f32__direct_form_2_transposed(pY, pX);
+                    pY += self.channels;
+                    pX += self.channels;
+                }
+
+                Ok(())
+            }
+            Format::S16 => {
+                let mut pY = unsafe { std::mem::transmute::<&mut [u8], &mut [i16]>(frames_out) };
+                let mut pX = unsafe { std::mem::transmute::<&    [u8], &    [i16]>(frames_in ) };
+
+                for n in 0..frame_count {
+                    self.process_pcm_frame_s16__direct_form_2_transposed(pY, pX);
+                    pY += self.channels;
+                    pX += self.channels;
+                }
+
+                Ok(())
+            }
+            _ => {
+                unreachable!("Should never hit this because it's checked in Biquad::init() and Biquad::reinit().");
+                Err(Error::InvalidArgs) /* Format not supported. Should never hit this because it's checked in ma_biquad_init() and ma_biquad_reinit(). */
+            }
+        }
+    }
+
+    pub const fn get_latency(&self) -> u32 {
+        2
+    }
+}
+
+
 #[inline(always)]
 fn clip_u8(x: i32) -> u8 {
     u8::try_from(x.clamp(i32::from(i8::MIN), i32::from(i8::MAX)) - i32::from(i8::MIN)).expect("clamp should ensure proper range")
@@ -4489,3 +4774,7 @@ DEVICE I/O
 
 *************************************************************************************************************************************************************
 ************************************************************************************************************************************************************/
+
+use std::time;
+
+pub fn device_info_add_native_data_format(device_info: DeviceInfoi)
