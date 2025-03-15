@@ -1,0 +1,214 @@
+[workspace]
+members = ["examples/example1", "miniaudio-rs"]
+
+[package]
+name = "raylib_rust_native"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[dependencies]
+miniaudio-rs = { path = "miniaudio-rs", optional = true }
+sdl2-sys = { version = "0.37.0", features = ["bundled"], optional = true }
+sdl3-sys = { version = "0.4.6", features = ["build-from-source"], optional = true }
+
+[dev-dependencies]
+bindgen = "0.71.1"
+
+[features]
+default = [
+    "support_module_rshapes",
+    "support_module_rtextures",
+    "support_module_rtext",
+    "support_module_rmodels",
+    "support_module_raudio",
+    "support_camera_system",
+    "support_gestures_system",
+    "support_rprand_generator",
+    "support_mouse_gestures",
+    "support_ssh_keyboard_rpi",
+    "support_winmm_highres_timer",
+    "support_partialbusy_wait_loop",
+    "support_screen_capture",
+    "support_gif_recording",
+    "support_compression_api",
+    "support_automation_events",
+    "support_clipboard_image",
+    "rl_support_mesh_gpu_skinning",
+    "support_quads_draw_mode",
+    "support_fileformat_png",
+    "support_fileformat_gif",
+    "support_fileformat_qoi",
+    "support_fileformat_dds",
+    "support_image_export",
+    "support_image_generation",
+    "support_image_manipulation",
+    "support_default_font",
+    "support_fileformat_ttf",
+    "support_fileformat_fnt",
+    "support_fileformat_obj",
+    "support_fileformat_mtl",
+    "support_fileformat_iqm",
+    "support_fileformat_gltf",
+    "support_fileformat_vox",
+    "support_fileformat_m3d",
+    "support_mesh_generation",
+    "support_fileformat_wav",
+    "support_fileformat_ogg",
+    "support_fileformat_mp3",
+    "support_fileformat_qoa",
+    "support_fileformat_xm",
+    "support_fileformat_mod",
+    "support_standard_fileio",
+    "support_tracelog",
+]
+platform-sdl2 = ["dep:sdl2-sys"]
+platform-sdl3 = ["dep:sdl3-sys"]
+
+#------------------------------------------------------------------------------------
+# Module selection - Some modules could be avoided
+# Mandatory modules: rcore, rlgl, utils
+#------------------------------------------------------------------------------------
+support_module_rshapes          = []
+support_module_rtextures        = []
+support_module_rtext            = ["support_module_rtextures"]
+support_module_rmodels          = []
+support_module_raudio           = ["dep:miniaudio-rs"]
+
+#------------------------------------------------------------------------------------
+# Module: rcore - Configuration Flags
+#------------------------------------------------------------------------------------
+# Camera module is included (rcamera.h) and multiple predefined cameras are available: free, 1st/3rd person, orbital
+support_camera_system           = []
+# Gestures module is included (rgestures.h) to support gestures detection: tap, hold, swipe, drag
+support_gestures_system         = []
+# Include pseudo-random numbers generator (rprand.h), based on Xoshiro128** and SplitMix64
+support_rprand_generator        = []
+# Mouse gestures are directly mapped like touches and processed by gestures system
+support_mouse_gestures          = []
+# Reconfigure standard input to receive key inputs, works with SSH connection.
+support_ssh_keyboard_rpi        = []
+# Setting a higher resolution can improve the accuracy of time-out intervals in wait functions.
+# However, it can also reduce overall system performance, because the thread scheduler switches tasks more often.
+support_winmm_highres_timer     = []
+# Use busy wait loop for timing sync, if not defined, a high-resolution timer is set up and used
+SUPPORT_BUSY_WAIT_LOOP          = []
+# Use a partial-busy wait loop, in this case frame sleeps for most of the time, but then runs a busy loop at the end for accuracy
+support_partialbusy_wait_loop    = []
+# Allow automatic screen capture of current screen pressing F12, defined in KeyCallback()
+support_screen_capture          = []
+# Allow automatic gif recording of current screen pressing CTRL+F12, defined in KeyCallback()
+support_gif_recording           = []
+# Support CompressData() and DecompressData() functions
+support_compression_api         = []
+# Support automatic generated events, loading and recording of those events when required
+support_automation_events       = []
+# Support custom frame control, only for advanced users
+# By default EndDrawing() does this job: draws everything + SwapScreenBuffer() + manage frame timing + PollInputEvents()
+# Enabling this flag allows manual control of the frame processes, use at your own risk
+support_custom_frame_control    = []
+
+# Support for clipboard image loading
+# NOTE: Only working on SDL3, GLFW (Windows) and RGFW (Windows)
+support_clipboard_image = [
+    # NOTE: Clipboard image loading requires support for some image file formats
+    # TODO: Those defines should probably be removed from here, I prefer to let the user manage them
+    "support_module_rtextures",
+    # "stbi_required",      # need to consider what this represents
+    "support_fileformat_bmp",
+    "support_fileformat_png",
+    "support_fileformat_jpg",
+]
+
+#------------------------------------------------------------------------------------
+# Module: rlgl - Configuration values
+#------------------------------------------------------------------------------------
+
+# Enable OpenGL Debug Context (only available on OpenGL 4.3)
+rlgl_enable_opengl_debug_context       = []
+
+# Show OpenGL extensions and capabilities detailed logs on init
+rlgl_show_gl_details_info              = []
+
+rl_support_mesh_gpu_skinning           = []   # GPU skinning, comment if your GPU does not support more than 8 VBOs
+
+#------------------------------------------------------------------------------------
+# Module: rshapes - Configuration Flags
+#------------------------------------------------------------------------------------
+# Use QUADS instead of TRIANGLES for drawing when possible
+# Some lines-based shapes could still use lines
+support_quads_draw_mode         = []
+
+#------------------------------------------------------------------------------------
+# Module: rtextures - Configuration Flags
+#------------------------------------------------------------------------------------
+# Selecte desired fileformats to be supported for image data loading
+support_fileformat_png      = []
+support_fileformat_bmp      = []
+support_fileformat_tga      = []
+support_fileformat_jpg      = []
+support_fileformat_gif      = []
+support_fileformat_qoi      = []
+support_fileformat_psd      = []
+support_fileformat_dds      = []
+support_fileformat_hdr      = []
+support_fileformat_pic      = []
+support_fileformat_ktx      = []
+support_fileformat_astc     = []
+support_fileformat_pkm      = []
+support_fileformat_pvr      = []
+
+# Support image export functionality (.png, .bmp, .tga, .jpg, .qoi)
+support_image_export            = []
+# Support procedural image generation functionality (gradient, spot, perlin-noise, cellular)
+support_image_generation        = []
+# Support multiple image editing functions to scale, adjust colors, flip, draw on images, crop...
+# If not defined, still some functions are supported: ImageFormat(), ImageCrop(), ImageToPOT()
+support_image_manipulation      = []
+
+#------------------------------------------------------------------------------------
+# Module: rtext - Configuration Flags
+#------------------------------------------------------------------------------------
+# Default font is loaded on window initialization to be available for the user to render simple text
+# NOTE: If enabled, uses external module functions to load default raylib font
+support_default_font            = []
+# Selected desired font fileformats to be supported for loading
+support_fileformat_ttf          = []
+support_fileformat_fnt          = []
+support_fileformat_bdf          = []
+
+#------------------------------------------------------------------------------------
+# Module: rmodels - Configuration Flags
+#------------------------------------------------------------------------------------
+# Selected desired model fileformats to be supported for loading
+support_fileformat_obj          = []
+support_fileformat_mtl          = []
+support_fileformat_iqm          = []
+support_fileformat_gltf         = []
+support_fileformat_vox          = []
+support_fileformat_m3d          = []
+# Support procedural mesh generation functions, uses external par_shapes.h library
+# NOTE: Some generated meshes DO NOT include generated texture coordinates
+support_mesh_generation         = []
+
+#------------------------------------------------------------------------------------
+# Module: raudio - Configuration Flags
+#------------------------------------------------------------------------------------
+# Desired audio fileformats to be supported for loading
+support_fileformat_wav          = []
+support_fileformat_ogg          = []
+support_fileformat_mp3          = []
+support_fileformat_qoa          = []
+support_fileformat_flac         = []
+support_fileformat_xm           = []
+support_fileformat_mod          = []
+
+#------------------------------------------------------------------------------------
+# Module: utils - Configuration Flags
+#------------------------------------------------------------------------------------
+# Standard file io library (stdio.h) included
+support_standard_fileio         = []
+# Show TRACELOG() output messages
+# NOTE: By default LOG_DEBUG traces not shown
+support_tracelog                = []
+support_tracelog_debug          = []

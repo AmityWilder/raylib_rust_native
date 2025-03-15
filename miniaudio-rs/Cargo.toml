@@ -1,0 +1,13 @@
+[package]
+name = "miniaudio-rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+[features]
+no_threading = []
+debug_output = []
+support_sse2 = []
+support_avx2 = []
+support_neon = []
